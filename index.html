@@ -1,0 +1,810 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Love Heart</title>
+<meta name="description" content="Mach auf und warte kurz…">
+<meta property="og:title" content="Warte… ich hab was für dich">
+<meta property="og:description" content="Mach auf und warte kurz…">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#000000">
+<style>
+  /* Bewusst nur ein dunkler Look: schwarzer Grund, Rot/Pink mit Glow. */
+  :root {
+    color-scheme: dark;
+    --bg: #000;
+    --rose: #ff4d6d;
+    --rose-light: #ff8fa3;
+    --muted: rgba(255, 143, 163, 0.55);
+    --glow: rgba(255, 77, 109, 0.6);
+    --track: rgba(255, 143, 163, 0.16);
+    --font: "Segoe UI", "Noto Sans", system-ui, "Helvetica Neue", Arial, sans-serif;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--rose-light);
+    font-family: var(--font);
+    overflow: hidden;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* Intro: Textzeilen mit Schreibmaschinen-Effekt + Fake-Ladebalken */
+  #intro {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 32px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    text-align: center;
+    transition: opacity 0.8s ease;
+  }
+  #intro.gone { opacity: 0; pointer-events: none; }
+  #line {
+    min-height: 2.4em;
+    max-width: 16ch;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: clamp(28px, 6vw, 58px);
+    line-height: 1.15;
+    text-wrap: balance;
+    text-shadow: 0 0 12px var(--glow), 0 0 34px var(--glow);
+  }
+  .caret {
+    display: inline-block;
+    width: 0.07em;
+    height: 0.9em;
+    margin-left: 0.06em;
+    background: currentColor;
+    vertical-align: -0.08em;
+    animation: blink 1s steps(1) infinite;
+  }
+  #loader {
+    width: min(320px, 80vw);
+    display: grid;
+    gap: 10px;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+  }
+  #loader.show { opacity: 1; }
+  #bar { height: 8px; border-radius: 99px; background: var(--track); overflow: hidden; }
+  #fill {
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--rose), var(--rose-light));
+    box-shadow: 0 0 12px var(--glow);
+  }
+  #pct {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  #hint {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    text-align: center;
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    opacity: 0;
+    transition: opacity 1s ease;
+    pointer-events: none;
+  }
+  #hint.show { opacity: 1; }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .caret { animation: none; }
+    #intro, #loader, #hint { transition-duration: 0.01s; }
+  }
+</style>
+</head>
+<body>
+<canvas id="heart" role="img" aria-label="Ein Herz aus „Ich liebe dich“ in vielen Sprachen"></canvas>
+<div id="intro" aria-live="polite">
+  <div id="line"></div>
+  <div id="loader" aria-hidden="true">
+    <div id="bar"><div id="fill"></div></div>
+    <div id="pct"><span>Lade Gefühle</span><span id="pctNum">0 %</span></div>
+  </div>
+</div>
+<div id="hint"></div>
+<script>
+/* =========================================================================
+   CONFIG – alles, was man leicht anpassen möchte, steht hier.
+   ========================================================================= */
+const CONFIG = {
+  // --- Farben ---------------------------------------------------------------
+  colors: ['#ff4d6d', '#ff5a78', '#ff6884', '#ff768f', '#ff8fa3'], // Füllwörter (zufällig)
+  outlineColor: '#ff6b86',                // Wörter auf der Kontur
+  glowColor: 'rgba(255, 77, 109, 0.75)',  // Leuchten (wie text-shadow)
+  glowBlur: 10,                           // Stärke des Leuchtens in px
+  auraColor: '255, 77, 109',              // weicher Schein hinter dem Herz (RGB)
+
+  // --- Schrift --------------------------------------------------------------
+  // Fallback-Kette deckt Latein, Kyrillisch, Griechisch, CJK, Thai, Devanagari,
+  // Bengali, Arabisch und Hebräisch ab. Wichtig: Latein-/Systemschriften stehen
+  // VOR den CJK-Schriften – sonst nimmt der Browser für Kyrillisch und Griechisch
+  // die breiten Zeichen aus PingFang & Co. und die Wörter wirken gesperrt.
+  fontFamily: '"Segoe UI", "Noto Sans", system-ui, "Helvetica Neue", Arial, ' +
+              '"Noto Sans Thai", "Noto Sans Devanagari", "Noto Sans Bengali", "Noto Sans Arabic", ' +
+              '"Noto Sans Hebrew", "Thonburi", "Kohinoor Devanagari", ' +
+              '"Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK KR", ' +
+              '"PingFang SC", "Hiragino Sans", "Apple SD Gothic Neo", "Malgun Gothic", "Microsoft YaHei", sans-serif',
+  fontWeight: 700,
+  minFont: 14,            // kleinste Schriftgröße (px, bei Referenzgröße des Herzens)
+  maxFont: 28,            // größte Schriftgröße
+  outlineFont: 19,        // Schriftgröße der Konturwörter
+  absoluteMinFont: 10,    // nie kleiner als das, auch auf kleinen Handys
+  fontReferenceWidth: 640,// bei dieser Herzbreite gelten die Größen 1:1
+
+  // --- Herz -----------------------------------------------------------------
+  heartSize: 0.7,         // Anteil am Bildschirm
+  heartSizeNarrow: 0.9,   // auf schmalen Bildschirmen etwas größer
+  narrowBreakpoint: 600,  // ab dieser Breite (px) gilt "schmal"
+  edgeMargin: 3,          // Mindestabstand der Wörter zum Herzrand (px)
+  wordGap: 2,             // Mindestabstand zwischen zwei Wörtern (px)
+  maxRepeat: 8,           // so oft darf derselbe Satz höchstens im Inneren vorkommen
+
+  // --- Animation ------------------------------------------------------------
+  outlineInterval: 70,    // Phase 1: ms zwischen zwei Konturwörtern
+  fillPause: 350,         // Pause zwischen Phase 1 und 2
+  fillIntervalStart: 60,  // Phase 2: Abstand am Anfang (ms) …
+  fillIntervalEnd: 18,    // … wird schneller bis hierhin
+  fadeDuration: 450,      // Einblenden pro Wort (ms)
+  scaleFrom: 0.8,         // Startskalierung beim Einblenden
+  pulseDelay: 500,        // Pause bis zum ersten Herzschlag
+  pulsePeriod: 1200,      // ein Herzschlag alle … ms
+  pulseScale: 1.04,       // maximale Vergrößerung beim Schlag
+
+  // --- Intro ----------------------------------------------------------------
+  intro: {
+    enabled: true,
+    typeSpeed: 42,        // ms pro Buchstabe
+    defaultName: 'du',    // "{name}" wird durch #Name im Link ersetzt, sonst durch das hier
+    skipHint: 'Tippen zum Überspringen',
+    steps: [
+      { say: 'Hey {name}.', hold: 1100 },
+      { say: 'Warte… ich hab was für dich.', hold: 1600 },
+      { say: 'Nein, das ist kein Virus. Versprochen.', hold: 1500 },
+      { say: 'Moment, ich hol’s kurz raus…', loader: { to: 99, duration: 2300 }, hold: 500 },
+      { say: 'Hängt bei 99 %. Typisch.', hold: 1400 },
+      { say: 'Zu viele Gefühle für einen Ladebalken.', loader: { to: 100, duration: 400 }, hold: 1200 },
+    ],
+  },
+  replayHint: 'Klick oder Leertaste: nochmal',
+
+  // --- Sprachen: „Ich liebe dich“ -------------------------------------------
+  languages: [
+    'Ich liebe dich',            // Deutsch
+    'I love you',                // Englisch
+    'Je t’aime',                 // Französisch
+    'Te amo',                    // Spanisch
+    'Ti amo',                    // Italienisch
+    'Eu te amo',                 // Portugiesisch
+    'Ik hou van jou',            // Niederländisch
+    'Jag älskar dig',            // Schwedisch
+    'Jeg elsker deg',            // Norwegisch
+    'Rakastan sinua',            // Finnisch
+    'Ég elska þig',              // Isländisch
+    'Kocham cię',                // Polnisch
+    'Miluji tě',                 // Tschechisch
+    'Szeretlek',                 // Ungarisch
+    'Te iubesc',                 // Rumänisch
+    'Volim te',                  // Kroatisch / Serbisch
+    'Я тебя люблю',              // Russisch
+    'Я тебе кохаю',              // Ukrainisch
+    'Обичам те',                 // Bulgarisch
+    'Σ’ αγαπώ',                  // Griechisch
+    'Seni seviyorum',            // Türkisch
+    'بحبك',                      // Arabisch
+    'אני אוהב אותך',             // Hebräisch
+    'دوستت دارم',                // Persisch
+    'मैं तुमसे प्यार करता हूँ',      // Hindi
+    'আমি তোমাকে ভালোবাসি',       // Bengalisch
+    '我爱你',                     // Chinesisch
+    '愛してる',                   // Japanisch
+    '사랑해',                     // Koreanisch
+    'ฉันรักเธอ',                  // Thai
+    'Anh yêu em',                // Vietnamesisch
+    'Aku cinta kamu',            // Indonesisch
+    'Mahal kita',                // Tagalog
+    'Nakupenda',                 // Suaheli
+    'T’estimo',                  // Katalanisch
+    'Maite zaitut',              // Baskisch
+    'Rwy’n dy garu di',          // Walisisch
+    'Mi amas vin',               // Esperanto
+  ],
+};
+
+/* =========================================================================
+   Grundzustand
+   ========================================================================= */
+const canvas = document.getElementById('heart');
+const ctx = canvas.getContext('2d');
+const baked = document.createElement('canvas');   // fertig eingeblendete Wörter
+const bctx = baked.getContext('2d');
+const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const CELL = 2;          // Rastergröße (px) für Kollisions- und Innen-Test
+let W = 0, H = 0, DPR = 1;
+let heart = null;        // { cx, cy, scale, width, poly, right, left }
+let grid = null;         // { gw, gh, cells: Uint8Array }  0 = frei, 1 = außen, 2 = Wort
+let fontScale = 1;
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const fontString = (size) => `${CONFIG.fontWeight} ${size}px ${CONFIG.fontFamily}`;
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// Endloser, zufällig gemischter Vorrat an Sätzen: jeder Eintrag kommt reihum dran.
+function makeBag(list) {
+  let bag = [];
+  return () => {
+    if (!bag.length) bag = shuffle(list.slice());
+    return bag.pop();
+  };
+}
+
+/* =========================================================================
+   Herzform
+   x = 16·sin³(t),  y = 13·cos(t) − 5·cos(2t) − 2·cos(3t) − cos(4t)
+   ========================================================================= */
+function heartPoint(t) {
+  const s = Math.sin(t);
+  return {
+    x: 16 * s * s * s,
+    y: 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t),
+  };
+}
+
+function buildHeart() {
+  // Ausdehnung der Formel bestimmen
+  let minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i < 2000; i++) {
+    const p = heartPoint((i / 2000) * Math.PI * 2);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  }
+  const size = W < CONFIG.narrowBreakpoint ? CONFIG.heartSizeNarrow : CONFIG.heartSize;
+  const scale = Math.min((W * size) / 32, (H * size) / (maxY - minY));
+  const cx = W / 2;
+  const cy = H / 2 + ((minY + maxY) / 2) * scale;   // Herz vertikal zentrieren
+  const toScreen = (p) => ({ x: cx + p.x * scale, y: cy - p.y * scale });
+
+  const poly = [];
+  for (let i = 0; i < 720; i++) poly.push(toScreen(heartPoint((i / 720) * Math.PI * 2)));
+
+  // Zwei Hälften, beide von der Mitte oben (t = 0 bzw. 2π) bis zur Spitze (t = π)
+  const right = [], left = [];
+  for (let i = 0; i <= 600; i++) {
+    right.push(toScreen(heartPoint((i / 600) * Math.PI)));
+    left.push(toScreen(heartPoint(Math.PI * 2 - (i / 600) * Math.PI)));
+  }
+
+  heart = { cx, cy, scale, width: 32 * scale, poly, right, left };
+  fontScale = clamp(heart.width / CONFIG.fontReferenceWidth, 0.6, 1.2);
+}
+
+/* =========================================================================
+   Raster: markiert, was außerhalb des Herzens liegt und wo schon Wörter sind
+   ========================================================================= */
+function buildGrid() {
+  const gw = Math.ceil(W / CELL), gh = Math.ceil(H / CELL);
+  const oc = document.createElement('canvas');
+  oc.width = gw;
+  oc.height = gh;
+  const o = oc.getContext('2d', { willReadFrequently: true });
+  o.scale(1 / CELL, 1 / CELL);
+  o.beginPath();
+  heart.poly.forEach((p, i) => (i ? o.lineTo(p.x, p.y) : o.moveTo(p.x, p.y)));
+  o.closePath();
+  o.fillStyle = '#fff';
+  o.fill();
+  // Rand nach innen abtragen, damit Wörter nicht am Umriss kleben
+  o.globalCompositeOperation = 'destination-out';
+  o.lineWidth = CONFIG.edgeMargin * 2;
+  o.lineJoin = 'round';
+  o.stroke();
+
+  const data = o.getImageData(0, 0, gw, gh).data;
+  const cells = new Uint8Array(gw * gh);
+  for (let k = 0; k < cells.length; k++) cells[k] = data[k * 4 + 3] > 250 ? 0 : 1;
+  grid = { gw, gh, cells };
+}
+
+// Prüft (mark = false) oder belegt (mark = true) alle Rasterzellen unter einem
+// (ggf. gedrehten) Rechteck. Gibt false zurück, sobald eine Zelle besetzt ist.
+function scanRect(r, mark) {
+  const { gw, gh, cells } = grid;
+  const hw = r.w / 2 + r.pad, hh = r.h / 2 + r.pad;
+  const cos = Math.cos(r.angle), sin = Math.sin(r.angle);
+  const ex = Math.abs(hw * cos) + Math.abs(hh * sin);
+  const ey = Math.abs(hw * sin) + Math.abs(hh * cos);
+  const i0 = Math.floor((r.cx - ex) / CELL), i1 = Math.floor((r.cx + ex) / CELL);
+  const j0 = Math.floor((r.cy - ey) / CELL), j1 = Math.floor((r.cy + ey) / CELL);
+  if (i0 < 0 || j0 < 0 || i1 >= gw || j1 >= gh) return false;
+  const rotated = r.angle !== 0;
+  const tol = CELL * 0.7072; // halbe Zelldiagonale: lieber zu vorsichtig
+  for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) {
+      if (rotated) {
+        const px = (i + 0.5) * CELL - r.cx, py = (j + 0.5) * CELL - r.cy;
+        const u = px * cos + py * sin, v = -px * sin + py * cos;
+        if (Math.abs(u) > hw + tol || Math.abs(v) > hh + tol) continue;
+      }
+      const k = j * gw + i;
+      if (mark) cells[k] = 2;
+      else if (cells[k]) return false;
+    }
+  }
+  return true;
+}
+
+/* =========================================================================
+   Wörter messen (measureText) – mit Cache
+   ========================================================================= */
+const measureCache = new Map();
+function measure(text, size) {
+  const key = text + '|' + size;
+  let m = measureCache.get(key);
+  if (m) return m;
+  ctx.font = fontString(size);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  const t = ctx.measureText(text);
+  const left = t.actualBoundingBoxLeft || 0;
+  const right = t.actualBoundingBoxRight || t.width;
+  const asc = t.actualBoundingBoxAscent || size * 0.8;
+  const desc = t.actualBoundingBoxDescent || size * 0.25;
+  m = { w: Math.max(t.width, left + right), h: asc + desc, left, asc };
+  measureCache.set(key, m);
+  return m;
+}
+
+function makeWord(text, size, color, cx, cy, angle) {
+  const m = measure(text, size);
+  return { text, size, font: fontString(size), color, cx, cy, angle, w: m.w, h: m.h, left: m.left, asc: m.asc, start: 0 };
+}
+
+// Größe runden, damit der Mess-Cache greift
+const roundSize = (s) => Math.max(CONFIG.absoluteMinFont, Math.round(s * 2) / 2);
+
+/* =========================================================================
+   Phase 1: Wörter entlang der Kontur – beide Hälften von oben-mitte zur Spitze
+   ========================================================================= */
+function makeSide(pts) {
+  const acc = [0];
+  for (let i = 1; i < pts.length; i++) {
+    acc.push(acc[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+  }
+  const side = { pts, acc, len: acc[acc.length - 1], s: 2, done: false };
+  // Welche Normale zeigt nach innen? An der Seitenmitte Richtung Herzmitte testen.
+  const mid = Math.floor(pts.length / 2);
+  const dx = pts[mid + 1].x - pts[mid].x, dy = pts[mid + 1].y - pts[mid].y;
+  side.sign = (-dy) * (heart.cx - pts[mid].x) > 0 ? 1 : -1;
+  return side;
+}
+
+function pointAt(side, s) {
+  const { pts, acc } = side;
+  let lo = 0, hi = acc.length - 1;
+  while (hi - lo > 1) {
+    const m = (lo + hi) >> 1;
+    if (acc[m] < s) lo = m; else hi = m;
+  }
+  const f = (s - acc[lo]) / (acc[hi] - acc[lo] || 1);
+  return { x: pts[lo].x + (pts[hi].x - pts[lo].x) * f, y: pts[lo].y + (pts[hi].y - pts[lo].y) * f };
+}
+
+function nextOutlineWord(side, nextText, nextShort) {
+  const pad = CONFIG.wordGap / 2;
+  const base = roundSize(CONFIG.outlineFont * fontScale);
+  while (side.s < side.len) {
+    const tries = [
+      [nextText(), base], [nextText(), base],
+      [nextShort(), base], [nextShort(), roundSize(base * 0.85)],
+    ];
+    for (const [text, size] of tries) {
+      const m = measure(text, size);
+      if (side.s + m.w > side.len) continue;
+      const a = pointAt(side, side.s), b = pointAt(side, side.s + m.w);
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+      const nx = (-dy / d) * side.sign, ny = (dx / d) * side.sign; // Normale nach innen
+      let angle = Math.atan2(dy, dx);
+      if (angle > Math.PI / 2) angle -= Math.PI;        // Text nie kopfüber
+      else if (angle <= -Math.PI / 2) angle += Math.PI;
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      for (const extra of [0, 2, 4, 7]) {
+        const off = m.h / 2 + pad + extra;
+        const r = { cx: mx + nx * off, cy: my + ny * off, w: m.w, h: m.h, angle, pad };
+        if (scanRect(r, false)) {
+          scanRect(r, true);
+          side.s += m.w + CONFIG.wordGap + 3;
+          return makeWord(text, size, CONFIG.outlineColor, r.cx, r.cy, angle);
+        }
+      }
+    }
+    side.s += 4; // hier passt nichts (z. B. an der Spitze) – ein Stück weiter
+  }
+  side.done = true;
+  return null;
+}
+
+function layoutOutline(nextText, nextShort) {
+  const sides = [makeSide(heart.right), makeSide(heart.left)];
+  const words = [];
+  while (sides.some((s) => !s.done)) {
+    for (const side of sides) {          // abwechselnd rechts / links
+      if (side.done) continue;
+      const w = nextOutlineWord(side, nextText, nextShort);
+      if (w) words.push(w);
+    }
+  }
+  return words;
+}
+
+/* =========================================================================
+   Phase 2: Innenraum füllen, bis kein Wort mehr passt
+   ========================================================================= */
+function layoutFill(nextText, nextShort) {
+  const { gw, gh, cells } = grid;
+  const pad = CONFIG.wordGap / 2;
+  const words = [];
+  const minF = CONFIG.minFont * fontScale, maxF = CONFIG.maxFont * fontScale;
+  const randomSize = () => roundSize(minF + (maxF - minF) * Math.pow(Math.random(), 1.25));
+  const counts = new Map();
+  const tryPlace = (text, size, cx, cy) => {
+    if ((counts.get(text) || 0) >= CONFIG.maxRepeat) return false; // keine Dauerwiederholung
+    const m = measure(text, size);
+    const r = { cx, cy, w: m.w, h: m.h, angle: 0, pad };
+    if (!scanRect(r, false)) return false;
+    scanRect(r, true);
+    counts.set(text, (counts.get(text) || 0) + 1);
+    words.push(makeWord(text, size, pick(CONFIG.colors), cx, cy, 0));
+    return true;
+  };
+
+  const free = [];
+  for (let k = 0; k < cells.length; k++) if (!cells[k]) free.push(k);
+  if (!free.length) return words;
+  const randomSpot = () => {
+    const k = pick(free);
+    return cells[k] ? null : [(k % gw + 0.5) * CELL, (Math.floor(k / gw) + 0.5) * CELL];
+  };
+
+  // A) Jede Sprache mindestens einmal – lange Sätze notfalls in kleiner Schrift
+  for (const text of shuffle(CONFIG.languages.slice())) {
+    for (let n = 0; n < 500; n++) {
+      const spot = randomSpot();
+      if (spot && tryPlace(text, n < 250 ? randomSize() : roundSize(minF), spot[0], spot[1])) break;
+    }
+  }
+
+  // B) Zufällige Größen an zufälligen Stellen – sorgt für die lebendige Mischung
+  const attempts = Math.min(6000, free.length);
+  for (let n = 0; n < attempts; n++) {
+    const spot = randomSpot();
+    if (!spot) continue;
+    const text = nextText(), size = randomSize();
+    // passt es nicht, dieselbe Stelle etwas kleiner probieren
+    if (!tryPlace(text, size, spot[0], spot[1])) tryPlace(text, roundSize(Math.max(minF, size * 0.75)), spot[0], spot[1]);
+  }
+
+  // C) Lücken systematisch auffüllen: Zeile für Zeile, immer kleinere Schrift
+  const tiers = [0.75, 0.62, 0.5].map((f) => roundSize(maxF * f));
+  tiers.push(roundSize(minF));
+  for (const size of tiers) {
+    for (let j = 0; j < gh; j++) {
+      for (let i = 0; i < gw; i++) {
+        if (cells[j * gw + i]) continue;
+        const x = i * CELL, y = j * CELL;
+        const candidates = [nextText(), nextText(), nextShort(), nextShort()];
+        candidates.sort((a, b) => measure(b, size).w - measure(a, size).w);
+        for (const text of candidates) {
+          const m = measure(text, size);
+          if (tryPlace(text, size, x + pad + m.w / 2, y + pad + m.h / 2)) break;
+        }
+      }
+    }
+  }
+  return words;
+}
+
+// Komplettes Layout: Kontur + Füllung, mit Startzeiten für die Animation
+function buildLayout() {
+  measureCache.clear();
+  buildGrid();
+  const nextText = makeBag(CONFIG.languages);
+  const ref = roundSize(CONFIG.minFont * fontScale);
+  // Die kürzesten Sätze füllen kleine Lücken – reihum, damit sich keiner ständig wiederholt
+  const nextShort = makeBag(CONFIG.languages.slice()
+    .sort((a, b) => measure(a, ref).w - measure(b, ref).w)
+    .slice(0, 12));
+
+  const outline = layoutOutline(nextText, nextShort);
+  const fill = shuffle(layoutFill(nextText, nextShort)); // zufällige Reihenfolge
+
+  let t = 0;
+  outline.forEach((w, i) => { w.start = t; t += CONFIG.outlineInterval; });
+  t += CONFIG.fillPause;
+  fill.forEach((w, i) => {
+    w.start = t;
+    const f = fill.length > 1 ? i / (fill.length - 1) : 1;
+    t += CONFIG.fillIntervalStart + (CONFIG.fillIntervalEnd - CONFIG.fillIntervalStart) * f;
+  });
+  return { words: outline.concat(fill), outlineCount: outline.length, end: t + CONFIG.fadeDuration };
+}
+
+/* =========================================================================
+   Zeichnen
+   ========================================================================= */
+function setupCanvas() {
+  DPR = Math.min(window.devicePixelRatio || 1, 3);   // scharf auf Retina-Displays
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = baked.width = Math.round(W * DPR);
+  canvas.height = baked.height = Math.round(H * DPR);
+  bctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+
+function drawWord(c, w, alpha, scale) {
+  c.save();
+  c.globalAlpha = alpha;
+  c.translate(w.cx, w.cy);
+  if (w.angle) c.rotate(w.angle);
+  if (scale !== 1) c.scale(scale, scale);
+  c.font = w.font;
+  c.fillStyle = w.color;
+  c.textAlign = 'left';
+  c.textBaseline = 'alphabetic';
+  c.shadowColor = CONFIG.glowColor;
+  c.shadowBlur = CONFIG.glowBlur * DPR * scale;  // shadowBlur ignoriert die Transformation
+  c.fillText(w.text, -w.w / 2 + w.left, -w.h / 2 + w.asc);
+  c.restore();
+}
+
+// Herzschlag: ein kräftiger und ein schwächerer Schlag ("ba-bumm"), dann Ruhe.
+function heartbeat(ms) {
+  if (ms < 0) return 0;
+  const p = (ms % CONFIG.pulsePeriod) / CONFIG.pulsePeriod;
+  const bump = (c, w) => (p >= c && p <= c + w ? Math.sin((Math.PI * (p - c)) / w) ** 2 : 0);
+  return bump(0, 0.18) + 0.55 * bump(0.2, 0.2);
+}
+
+function drawAura(strength) {
+  const r = heart.width * 0.75;
+  const g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, r);
+  g.addColorStop(0, `rgba(${CONFIG.auraColor}, ${0.1 * strength})`);
+  g.addColorStop(1, `rgba(${CONFIG.auraColor}, 0)`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+const state = { phase: 'intro', layout: null, t0: 0, next: 0, active: [], pulseT0: 0 };
+const fade = () => (REDUCED ? 150 : CONFIG.fadeDuration);
+
+function bakeAll() {
+  bctx.clearRect(0, 0, W, H);
+  for (const w of state.layout.words) drawWord(bctx, w, 1, 1);
+}
+
+function startHeart() {
+  state.layout = buildLayout();
+  bctx.clearRect(0, 0, W, H);
+  state.t0 = performance.now();
+  state.next = 0;
+  state.active = [];
+  state.phase = 'draw';
+  els.hint.classList.remove('show');
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (state.phase === 'intro') return;
+  const L = state.layout, t = now - state.t0, fd = fade();
+
+  if (state.phase === 'draw') {
+    // Wörter starten, sobald ihre Zeit gekommen ist
+    while (state.next < L.words.length && L.words[state.next].start <= t) state.active.push(L.words[state.next++]);
+    // Fertig eingeblendete Wörter einmalig auf die "baked"-Ebene malen
+    state.active = state.active.filter((w) => {
+      if (t - w.start < fd) return true;
+      drawWord(bctx, w, 1, 1);
+      return false;
+    });
+    if (state.next >= L.words.length && !state.active.length) {
+      state.phase = 'pulse';
+      state.pulseT0 = now + CONFIG.pulseDelay;
+      els.hint.textContent = CONFIG.replayHint;
+      els.hint.classList.add('show');
+    }
+  }
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  let beat = 0;
+  if (state.phase === 'pulse' && !REDUCED) beat = heartbeat(now - state.pulseT0);
+  const progress = L.words.length ? state.next / L.words.length : 1;
+  drawAura(0.5 * progress + 0.5 * beat);
+
+  // Ganzes Herz um die Bildschirmmitte skalieren (1 → 1.04 → 1)
+  const s = 1 + (CONFIG.pulseScale - 1) * beat;
+  ctx.setTransform(DPR * s, 0, 0, DPR * s, DPR * (W / 2) * (1 - s), DPR * (H / 2) * (1 - s));
+  ctx.drawImage(baked, 0, 0, W, H);
+
+  // Gerade erscheinende Wörter: Opacity 0 → 1, Scale 0.8 → 1
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const from = REDUCED ? 1 : CONFIG.scaleFrom;
+  for (const w of state.active) {
+    const p = clamp((t - w.start) / fd, 0, 1);
+    const e = 1 - Math.pow(1 - p, 3);
+    drawWord(ctx, w, e, from + (1 - from) * e);
+  }
+}
+
+/* =========================================================================
+   Intro: "Warte… ich hab was für dich" + Ladebalken, der bei 99 % hängt
+   ========================================================================= */
+const els = {
+  intro: document.getElementById('intro'),
+  line: document.getElementById('line'),
+  loader: document.getElementById('loader'),
+  fill: document.getElementById('fill'),
+  pct: document.getElementById('pctNum'),
+  hint: document.getElementById('hint'),
+};
+const intro = { skipped: false, done: false, waiters: [] };
+
+// Warten, das sich durch Überspringen sofort auflöst
+function wait(ms) {
+  if (intro.skipped) return Promise.resolve();
+  return new Promise((res) => {
+    const done = () => { clearTimeout(id); res(); };
+    const id = setTimeout(done, ms);
+    intro.waiters.push(done);
+  });
+}
+
+function skipIntro() {
+  if (intro.skipped) return;
+  intro.skipped = true;
+  intro.waiters.splice(0).forEach((f) => f());
+}
+
+// Optionaler Name aus dem Link, z. B. …#Lena → "Hey Lena."
+function viewerName() {
+  let raw = '';
+  try { raw = decodeURIComponent(location.hash.slice(1)); } catch (e) { raw = ''; }
+  const name = raw.replace(/[_\-.~+]+/g, ' ').replace(/[^\p{L}\s]/gu, '').trim().slice(0, 24);
+  return name || CONFIG.intro.defaultName;
+}
+
+async function typeLine(text) {
+  const node = document.createTextNode('');
+  const caret = document.createElement('span');
+  caret.className = 'caret';
+  els.line.replaceChildren(node, caret);
+  const chars = Array.from(text);
+  if (REDUCED || !CONFIG.intro.typeSpeed) { node.data = text; return; }
+  for (let i = 1; i <= chars.length; i++) {
+    if (intro.skipped) return;
+    node.data = chars.slice(0, i).join('');
+    // nach Satzzeichen kurz innehalten
+    await wait(CONFIG.intro.typeSpeed * (/[.,…!?]/.test(chars[i - 1]) ? 5 : 1));
+  }
+}
+
+function setLoader(v) {
+  els.fill.style.width = v + '%';
+  els.pct.textContent = Math.floor(v) + ' %';
+}
+
+function animateLoader(from, to, ms) {
+  return new Promise((res) => {
+    const t0 = performance.now();
+    const step = (now) => {
+      if (intro.skipped) return res();
+      const p = clamp((now - t0) / ms, 0, 1);
+      setLoader(from + (to - from) * (1 - (1 - p) ** 2));
+      if (p < 1) requestAnimationFrame(step); else res();
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+async function runIntro() {
+  if (!CONFIG.intro.enabled) return;
+  const name = viewerName();
+  els.hint.textContent = CONFIG.intro.skipHint;
+  els.hint.classList.add('show');
+  let progress = 0;
+  for (const step of CONFIG.intro.steps) {
+    if (intro.skipped) break;
+    await typeLine(step.say.replace('{name}', name));
+    if (step.loader) {
+      els.loader.classList.add('show');
+      await animateLoader(progress, step.loader.to, step.loader.duration);
+      progress = step.loader.to;
+    }
+    await wait(step.hold);
+  }
+}
+
+/* =========================================================================
+   Start, Neustart (Klick / Leertaste) und Größenänderung
+   ========================================================================= */
+function trigger() {
+  if (!intro.done) skipIntro();   // im Intro: überspringen
+  else startHeart();              // danach: Herz neu aufbauen
+}
+window.addEventListener('click', trigger);
+window.addEventListener('keydown', (e) => {
+  if ((e.code === 'Space' || e.key === ' ') && !e.repeat) {
+    e.preventDefault();
+    trigger();
+  }
+});
+
+let resizeTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    setupCanvas();
+    buildHeart();
+    if (state.phase === 'intro') return;
+    if (state.phase === 'pulse') { state.layout = buildLayout(); bakeAll(); }
+    else startHeart();
+  }, 200);
+});
+
+async function main() {
+  setupCanvas();
+  buildHeart();
+  requestAnimationFrame(frame);
+  await runIntro();
+  if (document.fonts && document.fonts.ready) await document.fonts.ready;
+  intro.done = true;
+  els.intro.classList.add('gone');
+  setTimeout(() => { els.intro.hidden = true; }, 900);
+  startHeart();
+}
+main();
+
+// Für Tests in der Browser-Konsole: window.__loveHeart.state.layout.words usw.
+window.__loveHeart = { state, get heart() { return heart; }, get grid() { return grid; } };
+</script>
+</body>
+</html>
